@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates the CodeBuild job for this repository.
+
+Resources:
+  BuilderRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: "builder-repository"
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              Service: "codebuild.amazonaws.com"
+            Action:
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:PutImage"
+              - "ecr:InitiateLayerUpload"
+              - "ecr:UploadLayerPart"
+              - "ecr:CompleteLayerUpload"
+              - "ecr:GetAuthorizationToken"
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "CodeBuildServiceRoleWithBuilderJob"
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+        - PolicyName: ecr-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/builder-repository"
+                Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+        - PolicyName: ecrLogin
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "BEFORE CREATING THE FILE"
+                - mkdir -p /root/test_folder
+                - cat /root/test_folder/test_file & true
+                - echo $(date -uIs) > /root/test_folder/test_file
+                - echo "AFTER CREATING THE FILE"
+                - cat /root/test_folder/test_file
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/builder-repository:latest"
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        ImagePullCredentialsType: SERVICE_ROLE
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Name: "CodeBuildJobWithBuilderCache"
+      ServiceRole: !Ref CodeBuildServiceRole
+
+
+  CodeBuildProjectBuilder:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo Logging in to Amazon ECR...
+                - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
+            build:
+              commands:
+                - echo "BEFORE CREATING THE FILE"
+                - echo "FROM busybox" > Dockerfile
+                - echo "RUN mkdir -p /root/test_folder" >> Dockerfile
+                - echo "RUN echo \"FROM BUILDER IMAGE - $(date -uIs)\" > /root/test_folder/test_file"  >> Dockerfile
+                - cat Dockerfile
+                - docker build -t $IMAGE_REPO_NAME .
+                - docker tag $IMAGE_REPO_NAME:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
+                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image:  aws/codebuild/standard:4.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: IMAGE_REPO_NAME
+            Type: PLAINTEXT
+            Value: "builder-repository"
+          - Name: AWS_DEFAULT_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Type: PLAINTEXT
+            Value: !Ref AWS::AccountId
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Name: "CodeBuildJobBuilder"
+      ServiceRole: !Ref CodeBuildServiceRole

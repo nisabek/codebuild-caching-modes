@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates the CodeBuild job for this repository.
+
+Resources:
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "CodeBuildServiceRoleS3Caching"
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+        - PolicyName: s3-cache
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource:
+                  - !Sub arn:aws:s3:::${CacheBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+
+  CacheBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: "916e0e6e-b40c-4813-8829-286823769d09-cache"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Cache:
+        Location: !Sub "${CacheBucket}/test-cache"
+        Modes:
+          - LOCAL_CUSTOM_CACHE
+        Type: S3
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "BEFORE CREATING THE FILE"
+                - mkdir -p /root/test_folder
+                - cat /root/test_folder/test_file & true
+                - echo $(date -uIs) > /root/test_folder/test_file
+                - echo "AFTER CREATING THE FILE"
+                - cat /root/test_folder/test_file
+          cache:
+            paths:
+              - '/root/test_folder/**/*'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Name: "CodeBuildJobS3Caching"
+      ServiceRole: !Ref CodeBuildServiceRole
